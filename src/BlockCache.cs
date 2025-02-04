@@ -80,7 +80,7 @@ public sealed class BlockCache: IBlockCache, IAsyncDisposable {
             if (blockIndex < 0) {
                 this.misses++;
                 this.MaybeReportHitRate();
-                return 0;
+                return -1;
             }
 
             int read = this.storage.Read(blockIndex: blockIndex, offset: offset32, buffer, cancel);

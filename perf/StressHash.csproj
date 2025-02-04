@@ -1,0 +1,25 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Hash</RootNamespace>
+
+    <ServerGarbageCollection>true</ServerGarbageCollection>
+
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\client\Hash.Client.csproj" />
+    <ProjectReference Include="..\src\Hash.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Borg.Common" Version="0.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.1" />
+  </ItemGroup>
+
+</Project>

@@ -5,16 +5,5 @@ global using System.Linq;
 global using System.Threading;
 global using System.Threading.Tasks;
 
-global using Microsoft.Extensions.Logging;
-global using Microsoft.Extensions.Logging.Abstractions;
-
-global using Xunit;
-global using Xunit.Abstractions;
-
-global using Borg.IO;
-global using Borg.Threading;
-
-global using Hash.Interfaces;
-
 // for FormattableString.Invariant
 global using static System.FormattableString;

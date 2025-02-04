@@ -1,17 +1,17 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <TargetFrameworks>netstandard2.0;net8.0</TargetFrameworks>
     <LangVersion>13</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-    <IsAotCompatible Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))">true</IsAotCompatible>
     <RootNamespace>Hash</RootNamespace>
-    <AssemblyName>Borg.Hash</AssemblyName>
+    <AssemblyName>Borg.Hash.Client</AssemblyName>
+
+    <IsAotCompatible Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))">true</IsAotCompatible>
 
     <!-- Package stuff -->
-    <PackageId>Borg.Hash</PackageId>
+    <PackageId>Borg.Hash.Client</PackageId>
     <Version>0.0.2</Version>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageLicenseFile Condition="$(PackageLicenseExpression) == ''">LICENSE</PackageLicenseFile>
@@ -30,24 +30,18 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Borg.Common" Version="0.0.1"/>
-    <PackageReference Include="Caching.Sieve" Version="0.0.1.1"/>
-    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.2"/>
     <!-- The following is recommended for public projects -->
     <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All"/>
-    <PackageReference Include="IsExternalInit" Version="1.0.3">
+    <PackageReference Include="PolySharp" Version="1.15.0">
       <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers</IncludeAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
+    <PackageReference Include="System.Memory" Version="4.6.0" />
+    <PackageReference Include="System.Threading.Tasks.Extensions" Version="4.6.0" />
   </ItemGroup>
-
+  
   <ItemGroup>
-    <ProjectReference Include="..\client\Hash.Client.csproj"/>
-  </ItemGroup>
-
-  <ItemGroup>
-    <InternalsVisibleTo Include="Hash.Tests"/>
-    <InternalsVisibleTo Include="StressHash"/>
+    <InternalsVisibleTo Include="Borg.Hash" />
   </ItemGroup>
 
 </Project>
