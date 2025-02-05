@@ -2,7 +2,7 @@ namespace Hash;
 
 using System.Net.Sockets;
 
-class TcpContentServer {
+public sealed class TcpContentServer {
     readonly TcpListener listener;
     readonly IBlockCache cache;
     readonly ILogger log;

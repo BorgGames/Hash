@@ -2,7 +2,7 @@ namespace Hash;
 
 using Borg.Diagnostics;
 
-public class ValidatingBlockCache(IBlockCache cache): IBlockCache {
+public sealed class ValidatingBlockCache(IBlockCache cache): IBlockCache {
     readonly IBlockCache cache = cache ?? throw new ArgumentNullException(nameof(cache));
 
     public event Action<IBlockCache, ContentHash>? Evicted {
