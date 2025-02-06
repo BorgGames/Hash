@@ -5,6 +5,8 @@ using System.Buffers.Binary;
 using System.Diagnostics;
 
 public sealed class ContentStreamClient: IContentCache, IDisposable {
+    public const int DEFAULT_PORT = 16 * 1024;
+
     const uint QUERY_MAX = 0x0F_FF_FF_FF;
     internal const int NOT_IN_CACHE = -1;
     readonly Stream stream;
@@ -168,7 +170,8 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
                 await this.sendSemaphore.WaitAsync(cancel).ConfigureAwait(false);
                 gotSemaphore = true;
 #if NET6_0_OR_GREATER
-                await this.stream.WriteAsync(packet.AsMemory(0, packetLength), cancel).ConfigureAwait(false);
+                await this.stream.WriteAsync(packet.AsMemory(0, packetLength), cancel)
+                          .ConfigureAwait(false);
 #else
                 await this.stream.WriteAsync(packet, 0, packetLength, cancel).ConfigureAwait(false);
 #endif

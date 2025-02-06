@@ -7,10 +7,12 @@ using Borg.Diagnostics;
 using Caching;
 
 public sealed class BlockCache: IBlockCache, IAsyncDisposable {
+    public const int DEFAULT_BLOCK_SIZE = 16 * 1024;
+
     readonly BlockStorage storage;
     readonly Sieve<ContentHash> evictionStrategy;
     readonly ILogger log;
-    readonly int blockSize = 16 * 1024;
+    readonly int blockSize = DEFAULT_BLOCK_SIZE;
 
     enum AccessPriority {
         RELEASER,
