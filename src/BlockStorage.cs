@@ -153,11 +153,14 @@ sealed class BlockStorage: IAsyncDisposable {
             int stateTagPosition = numberOfBlocks;
             var stateTag = index[stateTagPosition].Hash;
 
-            if (stateTag != Clean)
+            if (stateTag != Clean) {
+                log.LogInformation("state tag is {StateTag}, expected {Expected}",
+                                   stateTag, Clean);
                 await RebuildIndexAsync(index: index,
                                         blocks: blocks,
                                         numberOfBlocks: numberOfBlocks,
                                         log, cancel).ConfigureAwait(false);
+            }
 
             return new(blockIO: blocks, index,
                        blockSize: blockSize, size: numberOfBlocks,
