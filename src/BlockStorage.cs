@@ -139,7 +139,8 @@ sealed class BlockStorage: IAsyncDisposable {
                                                           FileAccess.ReadWrite, FileShare.None)) {
                 long indexSize = Hash.BlockIndex.Size(numberOfBlocks + 1);
                 if (indexStream.Length != indexSize)
-                    log.LogInformation("resizing index file to {IndexSize}", indexSize);
+                    log.LogInformation("resizing index file from {OldSize} to {IndexSize}",
+                                       indexStream.Length, indexSize);
                 else
                     log.LogInformation("index size is {IndexSize}", indexSize);
                 indexStream.SetLength(indexSize);
