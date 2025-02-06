@@ -2,6 +2,7 @@ namespace Hash;
 
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Net.Sockets;
 
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -46,6 +47,8 @@ class ContentStreamServer {
         } catch (OperationCanceledException e) when (e.CancellationToken == cancel) {
             return this.stopReason;
         } catch (EndOfStreamException) {
+            return StopReason.STREAM_ENDED;
+        } catch (SocketException e) when (e.SocketErrorCode is SocketError.ConnectionReset) {
             return StopReason.STREAM_ENDED;
         } catch (IOException) {
             return StopReason.ERROR;
