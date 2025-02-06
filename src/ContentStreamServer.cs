@@ -161,17 +161,16 @@ class ContentStreamServer {
         WriteUInt64In(response, ref packetOffset, queryID, this.format.QueryBytes);
         try {
             var resultDataSlice = response.AsMemory(packetOffset, packetOffset + toRead);
-            int read = await this
-                             .cache.ReadAsync(hash, offset, resultDataSlice, cancel)
-                             .ConfigureAwait(false);
+            int? read = await this
+                              .cache.ReadAsync(hash, offset, resultDataSlice, cancel)
+                              .ConfigureAwait(false);
 
             packetOffset = offsetOfActuallyRead;
             WriteUInt64In(response, ref packetOffset,
-                          (ulong)(read < 0 ? NOT_IN_CACHE : read),
+                          (ulong)(read ?? NOT_IN_CACHE),
                           this.format.SizeBytes);
 
-            var responseMemory =
-                response.AsMemory(0, this.format.ReadResponseLength(Math.Max(read, 0)));
+            var responseMemory = response.AsMemory(0, this.format.ReadResponseLength(read ?? 0));
             await this.SendAsync(responseMemory, cancel)
                       .ConfigureAwait(false);
         } catch {

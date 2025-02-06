@@ -26,8 +26,8 @@ public sealed class ValidatingBlockCache(IBlockCache cache): IBlockCache {
         return timeToCheckHash + timeToWrite;
     }
 
-    public ValueTask<int> ReadAsync(ContentHash hash, long offset, Memory<byte> buffer,
-                                    CancellationToken cancel = default)
+    public ValueTask<int?> ReadAsync(ContentHash hash, long offset, Memory<byte> buffer,
+                                     CancellationToken cancel = default)
         => this.cache.ReadAsync(hash, offset, buffer, cancel);
 
     public ValueTask<TimeSpan> FlushAsync(CancellationToken cancel = default)

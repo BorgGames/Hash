@@ -67,8 +67,8 @@ public sealed class BlockCache: IBlockCache, IAsyncDisposable {
         }
     }
 
-    public async ValueTask<int> ReadAsync(ContentHash hash, long offset, Memory<byte> buffer,
-                                          CancellationToken cancel = default) {
+    public async ValueTask<int?> ReadAsync(ContentHash hash, long offset, Memory<byte> buffer,
+                                           CancellationToken cancel = default) {
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
         ArgumentOutOfRangeException.ThrowIfGreaterThanOrEqual(offset, int.MaxValue);
         int offset32 = (int)offset;
@@ -80,7 +80,7 @@ public sealed class BlockCache: IBlockCache, IAsyncDisposable {
             if (blockIndex < 0) {
                 this.misses++;
                 this.MaybeReportHitRate();
-                return -1;
+                return null;
             }
 
             int read = this.storage.Read(blockIndex: blockIndex, offset: offset32, buffer, cancel);
