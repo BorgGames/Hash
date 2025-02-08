@@ -12,7 +12,7 @@
 
     <!-- Package stuff -->
     <PackageId>Borg.Hash</PackageId>
-    <Version>0.0.3.0</Version>
+    <Version>0.0.3.1</Version>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageLicenseFile Condition="$(PackageLicenseExpression) == ''">LICENSE</PackageLicenseFile>
     <PackageReadmeFile>README.md</PackageReadmeFile>

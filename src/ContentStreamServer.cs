@@ -166,7 +166,7 @@ class ContentStreamServer {
         packetOffset += this.format.SizeBytes;
         WriteUInt64In(response, ref packetOffset, queryID, this.format.QueryBytes);
         try {
-            var resultDataSlice = response.AsMemory(packetOffset, packetOffset + toRead);
+            var resultDataSlice = response.AsMemory(packetOffset, length: toRead);
             int? read = await this
                               .cache.ReadAsync(hash, offset, resultDataSlice, cancel)
                               .ConfigureAwait(false);
