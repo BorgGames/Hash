@@ -27,7 +27,7 @@ public sealed class TcpContentServer {
         var stream = client.GetStream();
         await using var _ = stream.ConfigureAwait(false);
 
-        var server = new ContentStreamServer(this.cache, stream);
+        var server = new ContentStreamServer(this.cache, stream, this.log);
         await using var __ = cancel.Register(server.Stop);
         var stopReason = await server.RunAsync().ConfigureAwait(false);
 

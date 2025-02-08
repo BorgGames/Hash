@@ -17,6 +17,7 @@ class ContentStreamServer {
     readonly byte[] receiveBuffer;
     readonly CancellationTokenSource stop = new();
     StopReason stopReason = StopReason.STOP_REQUESTED;
+    readonly ILogger log;
 
     public enum StopReason {
         STOP_REQUESTED,
@@ -50,7 +51,8 @@ class ContentStreamServer {
             return StopReason.STREAM_ENDED;
         } catch (SocketException e) when (e.SocketErrorCode is SocketError.ConnectionReset) {
             return StopReason.STREAM_ENDED;
-        } catch (IOException) {
+        } catch (IOException e) {
+            this.log.LogDebug(e, "IO error: {Message}", e.Message);
             return StopReason.ERROR;
         }
     }
@@ -76,6 +78,7 @@ class ContentStreamServer {
     }
 
     async ValueTask SendErrorAsync(string message, CancellationToken cancel) {
+        this.log.LogDebug("sending error: {Message}", message);
         using var mem = MemoryPool<byte>.Shared.Rent(128);
         int bytes = System.Text.Encoding.ASCII.GetBytes(message, mem.Memory.Span);
         try {
@@ -205,9 +208,11 @@ class ContentStreamServer {
         this.stop.Cancel();
     }
 
-    public ContentStreamServer(IBlockCache cache, Stream stream) {
+    public ContentStreamServer(IBlockCache cache, Stream stream, ILogger log) {
         this.cache = cache ?? throw new ArgumentNullException(nameof(cache));
         this.stream = stream ?? throw new ArgumentNullException(nameof(stream));
+        this.log = log ?? throw new ArgumentNullException(nameof(log));
+
         if (this.cache.MaxBlockSize > int.MaxValue / 2)
             throw new NotSupportedException("Block size too large");
         if (this.cache.MaxBlockSize <= ContentHash.SIZE_IN_BYTES * 2)
