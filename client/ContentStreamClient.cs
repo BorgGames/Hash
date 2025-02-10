@@ -118,8 +118,9 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
 
                 query.Completion.TrySetResult(read);
             } else {
-                await this.stream.Drain(count: read, this.receiveBuffer, cancel)
-                          .ConfigureAwait(false);
+                if (read != -1)
+                    await this.stream.Drain(count: read, this.receiveBuffer, cancel)
+                              .ConfigureAwait(false);
             }
 
             break;

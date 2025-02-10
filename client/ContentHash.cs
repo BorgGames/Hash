@@ -2,6 +2,7 @@ namespace Hash;
 
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 
 public readonly struct ContentHash(long a, long b, long c, long d): IEquatable<ContentHash> {
@@ -63,6 +64,11 @@ public readonly struct ContentHash(long a, long b, long c, long d): IEquatable<C
         byte[] hash = sha256.ComputeHash(tmp, 0, count: buffer.Length);
 #endif
         return FromBytes(hash);
+    }
+    
+    public int Lo4() {
+        var bytes = MemoryMarshal.AsBytes([this]);
+        return BinaryPrimitives.ReadInt32LittleEndian(bytes);
     }
 
 #if NET6_0_OR_GREATER
