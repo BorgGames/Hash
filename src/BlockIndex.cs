@@ -20,17 +20,32 @@ sealed class BlockIndex: IAsyncDisposable {
 
         this.reader = reader;
         this.writer = writer;
-        this.Count = numberOfBlocks;
+        this.BlockCount = numberOfBlocks;
+    }
+
+    public BlockIndex(int numberOfBlocks) {
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(numberOfBlocks);
+        var data = new ArrayBlockIO(blockSize: Marshal.SizeOf<Entry>(), blockCount: numberOfBlocks);
+        this.reader = data;
+        this.writer = data;
+        this.BlockCount = numberOfBlocks;
+
+        var random = new Random();
+        for (int blockIndex = 0; blockIndex < numberOfBlocks; blockIndex++) {
+            var entry = new Entry(ContentHash.Fake(random), 0);
+            this.positions.Add(entry.Hash, blockIndex);
+            this.SetUnchecked(blockIndex, entry);
+        }
     }
 
     public int Used => this.positions.Count;
-    public int Count { get; }
+    public int BlockCount { get; }
 
     public int IndexOf(ContentHash hash) => this.positions.GetValueOrDefault(hash, -1);
 
     public unsafe Entry this[int index] {
         get {
-            if (index < 0 || index >= this.Count)
+            if (index < 0 || index >= this.BlockCount)
                 throw new ArgumentOutOfRangeException(nameof(index));
 
             Span<Entry> entries = stackalloc Entry[1];
@@ -45,7 +60,7 @@ sealed class BlockIndex: IAsyncDisposable {
     }
 
     public bool TrySet(int index, Entry value) {
-        if (index < 0 || index >= this.Count)
+        if (index < 0 || index >= this.BlockCount)
             throw new ArgumentOutOfRangeException(nameof(index));
 
         var previous = this[index];

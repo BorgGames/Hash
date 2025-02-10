@@ -2,30 +2,47 @@ namespace Hash;
 
 using System.Buffers;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 
 sealed class BlockStorage: IAsyncDisposable {
     public static readonly ContentHash Clean = new(0xC0FFEE, 0xF0, 0xDEE, 0xC0FFEE);
 
     readonly ILogger log;
     readonly BlockIndex index;
-    readonly MappedMemoryBlockIO writer;
-    readonly MappedMemoryBlockIO reader;
+    readonly IBlockWriter writer;
+    readonly IBlockReader reader;
     bool dirty;
 
     BlockStorage(MappedMemoryBlockIO blockIO, BlockIndex index,
-                 int blockSize, int size,
+                 int blockSize, int blockCount,
                  ILogger log) {
         this.writer = blockIO ?? throw new ArgumentNullException(nameof(blockIO));
         this.reader = blockIO;
         this.index = index ?? throw new ArgumentNullException(nameof(index));
         this.BlockSize = blockSize;
-        this.Size = size;
+        this.BlockCount = blockCount;
         this.log = log ?? throw new ArgumentNullException(nameof(log));
     }
 
-    int StateTagPosition => this.Size;
+    [SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits")]
+    public BlockStorage(int blockSize, int blockCount, ILogger log) {
+        this.log = log ?? throw new ArgumentNullException(nameof(log));
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(blockSize);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(blockCount);
+        this.index = new(numberOfBlocks: checked(blockCount + 1));
+        var blocks = new ArrayBlockIO(blockSize: blockSize, blockCount: blockCount);
+        this.reader = blocks;
+        this.writer = blocks;
+        this.BlockCount = blockCount;
+        this.BlockSize = blockSize;
+        RebuildIndexAsync(this.index, blocks, numberOfBlocks: blockCount, log,
+                          CancellationToken.None)
+            .GetAwaiter().GetResult();
+    }
+
+    int StateTagPosition => this.BlockCount;
     public int BlockSize { get; }
-    public int Size { get; }
+    public int BlockCount { get; }
     public int Used => this.index.Used;
 
     public int BlockIndex(ContentHash hash) {
@@ -36,7 +53,7 @@ sealed class BlockStorage: IAsyncDisposable {
     public int SizeOfBlock(int blockIndex) => this.index[blockIndex].Bytes;
 
     public ContentHash GetHash(int blockIndex) {
-        if (blockIndex < 0 || blockIndex >= this.Size)
+        if (blockIndex < 0 || blockIndex >= this.BlockCount)
             throw new ArgumentOutOfRangeException(nameof(blockIndex), blockIndex,
                                                   "Index out of bounds");
 
@@ -50,7 +67,7 @@ sealed class BlockStorage: IAsyncDisposable {
             throw new ArgumentOutOfRangeException(nameof(block), block.Length,
                                                   "Block size mismatch");
 
-        if (blockIndex < 0 || blockIndex >= this.Size)
+        if (blockIndex < 0 || blockIndex >= this.BlockCount)
             throw new ArgumentOutOfRangeException(nameof(blockIndex), blockIndex,
                                                   "Index out of bounds");
 
@@ -67,7 +84,7 @@ sealed class BlockStorage: IAsyncDisposable {
     }
 
     public int Read(int blockIndex, int offset, Memory<byte> block, CancellationToken cancel) {
-        if (blockIndex < 0 || blockIndex >= this.Size)
+        if (blockIndex < 0 || blockIndex >= this.BlockCount)
             throw new ArgumentOutOfRangeException(nameof(blockIndex), blockIndex,
                                                   "Index out of bounds");
 
@@ -164,7 +181,7 @@ sealed class BlockStorage: IAsyncDisposable {
             }
 
             return new(blockIO: blocks, index,
-                       blockSize: blockSize, size: numberOfBlocks,
+                       blockSize: blockSize, blockCount: numberOfBlocks,
                        log);
         } catch {
             blocks.Dispose();

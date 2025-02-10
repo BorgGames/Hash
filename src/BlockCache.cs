@@ -118,8 +118,8 @@ public sealed class BlockCache: IBlockCache, IAsyncDisposable {
 
     BlockCache(BlockStorage storage, ILogger log) {
         this.storage = storage;
-        this.evictionStrategy = new Sieve<ContentHash>(this.storage.Size);
-        for (int blockIndex = 0; blockIndex < storage.Size; blockIndex++) {
+        this.evictionStrategy = new Sieve<ContentHash>(this.storage.BlockCount);
+        for (int blockIndex = 0; blockIndex < storage.BlockCount; blockIndex++) {
             bool evicted = this.evictionStrategy.Access(storage.GetHash(blockIndex), out var __);
             Debug.Assert(!evicted);
         }
@@ -139,6 +139,9 @@ public sealed class BlockCache: IBlockCache, IAsyncDisposable {
 
         return new(storage, log);
     }
+
+    public BlockCache(int blockSize, int blockCount, ILogger<BlockCache> log)
+        : this(new(blockSize, blockCount, log), log) { }
 
     public ValueTask DisposeAsync() => this.storage.DisposeAsync();
 }
