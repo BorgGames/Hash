@@ -54,17 +54,21 @@ public class StressTest {
         var accessStart = StopwatchTimestamp.Now;
         try {
             while (!cancel.IsCancellationRequested) {
-                int size = random.Next(1, (int)cache.MaxBlockSize);
-                var block = data.AsMemory(0, size);
-                random.NextBytes(block.Span);
-                var hash = ContentHash.Compute(block.Span);
+                ContentHash hash;
+                Memory<byte> block;
+                if (transmitted == 0 || random.Next(10) == 0) {
+                    int size = random.Next(1, (int)cache.MaxBlockSize);
+                    block = data.AsMemory(0, size);
+                    random.NextBytes(block.Span);
+                    hash = ContentHash.Compute(block.Span);
 
-                using var writeCancel = TimeSpan.FromSeconds(10).ToCancellation().Link(cancel);
-                accessStart = StopwatchTimestamp.Now;
-                await cache.WriteAsync(hash, block, writeCancel.Token).ConfigureAwait(false);
-                transmitted += size;
+                    using var writeCancel = TimeSpan.FromSeconds(10).ToCancellation().Link(cancel);
+                    accessStart = StopwatchTimestamp.Now;
+                    await cache.WriteAsync(hash, block, writeCancel.Token).ConfigureAwait(false);
+                    transmitted += size;
 
-                hashes.Add(hash);
+                    hashes.Add(hash);
+                }
 
                 hash = hashes[random.Next(hashes.Count)];
 
