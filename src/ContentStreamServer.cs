@@ -121,6 +121,8 @@ class ContentStreamServer {
     /// <seealso cref="ContentStreamClient.HandlePacket"/>
     async Task RespondToWriteAsync(uint queryID, int toWrite, ContentHash hash, byte[] buffer,
                                    CancellationToken cancel) {
+        await Task.Yield();
+
         try {
             var time = await this.cache.WriteAsync(hash, buffer.AsMemory(0, toWrite), cancel)
                                  .ConfigureAwait(false);
@@ -158,6 +160,8 @@ class ContentStreamServer {
 
     async Task RespondToReadAsync(uint queryID, long offset, int toRead, ContentHash hash,
                                   CancellationToken cancel) {
+        await Task.Yield();
+
         byte[] response = ArrayPool<byte>.Shared.Rent(this.format.ReadResponseLength(toRead));
 
         int packetOffset = 0;
