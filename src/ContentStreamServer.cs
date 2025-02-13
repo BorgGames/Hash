@@ -10,6 +10,8 @@ using Nito.AsyncEx;
 
 using static ContentStreamClient;
 
+using static SocketHandling;
+
 class ContentStreamServer {
     readonly IBlockCache cache;
     readonly ContentStreamPacketFormat format;
@@ -49,7 +51,8 @@ class ContentStreamServer {
             return this.stopReason;
         } catch (EndOfStreamException) {
             return StopReason.STREAM_ENDED;
-        } catch (SocketException e) when (e.SocketErrorCode is SocketError.ConnectionReset) {
+        } catch (SocketException e) when (IsProbablyJustDisconnected(e.SocketErrorCode)) {
+            this.log.LogTrace(e, "disconnected: {StatusCode}", e.SocketErrorCode);
             return StopReason.STREAM_ENDED;
         } catch (IOException e) {
             this.log.LogDebug(e, "IO error: {Message}", e.Message);
@@ -181,8 +184,11 @@ class ContentStreamServer {
                           this.format.SizeBytes);
 
             var responseMemory = response.AsMemory(0, this.format.ReadResponseLength(read ?? 0));
-            await this.SendAsync(responseMemory, cancel)
-                      .ConfigureAwait(false);
+            try {
+                await this.SendAsync(responseMemory, cancel).ConfigureAwait(false);
+            } catch (SocketException e) when (IsProbablyJustDisconnected(e.SocketErrorCode)) {
+                this.log.LogTrace(e, "disconnected: {StatusCode}", e.SocketErrorCode);
+            }
         } catch {
             await this.SendErrorAsync("internal error", cancel).ConfigureAwait(false);
         } finally {
