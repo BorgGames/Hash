@@ -2,6 +2,7 @@ namespace Hash;
 
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 
 public sealed class ContentStreamClient: IContentCache, IDisposable {
@@ -9,7 +10,7 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
 
     const uint QUERY_MAX = 0x0F_FF_FF_FF;
     internal const int NOT_IN_CACHE = -1;
-    readonly Stream stream;
+    readonly BufferedStream readStream, writeStream;
 
     event Action<IContentCache, ContentHash>? Evicted;
     event IContentCache.AvailableHandler? Available;
@@ -18,7 +19,7 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
     uint lastQueryID;
     readonly Dictionary<uint, Query> pending = new();
     readonly ContentStreamPacketFormat format;
-    readonly SemaphoreSlim sendSemaphore = new(1, 1);
+    readonly CancellationTokenSource stop = new();
 
     public int MaxBlockSize { get; }
     long IContentCache.MaxBlockSize => this.MaxBlockSize;
@@ -45,9 +46,13 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
 
         var query = this.AddPendingQuery(queryID, new(buffer: null));
 
-        return TimeSpan.FromTicks(await this.Send(buffer, packetLength,
-                                                  queryID: queryID,
-                                                  query, cancel).ConfigureAwait(false));
+        try {
+            return TimeSpan.FromTicks(await this.Send(buffer, packetLength,
+                                                      queryID: queryID,
+                                                      query, cancel).ConfigureAwait(false));
+        } finally {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
     }
 
     public async ValueTask<int?> ReadAsync(ContentHash hash, long offset, Memory<byte> buffer,
@@ -82,22 +87,24 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
 
         var query = this.AddPendingQuery(queryID, new(buffer));
 
-        int read = checked((int)await this.Send(packet, packetLength,
-                                                queryID: queryID,
-                                                query, cancel).ConfigureAwait(false));
-        return read >= 0 ? read : null;
+        try {
+            int read = checked((int)await this.Send(packet, packetLength,
+                                                    queryID: queryID,
+                                                    query, cancel).ConfigureAwait(false));
+            return read >= 0 ? read : null;
+        } finally {
+            ArrayPool<byte>.Shared.Return(packet);
+        }
     }
 
     readonly byte[] receiveBuffer;
 
-    async ValueTask HandlePacket(CancellationToken cancel) {
-        var purpose =
-            (Purpose)await this.ReadInt64In(this.format.PurposeBytes, cancel).ConfigureAwait(false);
+    void HandlePacket() {
+        var purpose = (Purpose)this.ReadInt64In(this.format.PurposeBytes);
         switch (purpose) {
         case Purpose.READ:
-            long read = await this.ReadInt64In(this.format.SizeBytes, cancel).ConfigureAwait(false);
-            uint queryID = await this.ReadQueryID(this.format.QueryBytes, cancel)
-                                     .ConfigureAwait(false);
+            long read = this.ReadInt64In(this.format.SizeBytes);
+            uint queryID = this.ReadQueryID(this.format.QueryBytes);
             if (this.TryGetQuery(queryID) is { } query) {
                 if (query.Buffer is not { } buffer)
                     throw new InvalidDataException("Wrong response purpose");
@@ -110,24 +117,22 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
 
                 buffer = buffer[..(int)read];
 #if NET6_0_OR_GREATER
-                await this.stream.ReadExactlyAsync(buffer, cancel).ConfigureAwait(false);
+                this.readStream.ReadExactly(buffer.Span);
 #else
-                await this.stream.ReadExact(buffer, tmp: this.receiveBuffer, cancel)
-                          .ConfigureAwait(false);
+                this.readStream.ReadExact(buffer, tmp: this.receiveBuffer);
 #endif
 
                 query.Completion.TrySetResult(read);
             } else {
                 if (read != -1)
-                    await this.stream.Drain(count: read, this.receiveBuffer, cancel)
-                              .ConfigureAwait(false);
+                    this.readStream.Drain(count: read, this.receiveBuffer);
             }
 
             break;
 
         case Purpose.WRITE:
-            queryID = await this.ReadQueryID(this.format.QueryBytes, cancel).ConfigureAwait(false);
-            long ticks = await this.ReadInt64In(8, cancel).ConfigureAwait(false);
+            queryID = this.ReadQueryID(this.format.QueryBytes);
+            long ticks = this.ReadInt64In(8);
             if (this.TryGetQuery(queryID) is { } pendingWrite) {
                 if (pendingWrite.Buffer is not null)
                     throw new InvalidDataException("Wrong response purpose");
@@ -140,20 +145,16 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
             break;
 
         case Purpose.EVICTED:
-            var hash = await this.stream.ReadContentHash(this.receiveBuffer, cancel)
-                                 .ConfigureAwait(false);
+            var hash = this.readStream.ReadContentHash(this.receiveBuffer);
             this.Evicted?.Invoke(this, hash);
             break;
 
         case Purpose.AVAILABLE:
-            hash = await this.stream.ReadContentHash(this.receiveBuffer, cancel)
-                             .ConfigureAwait(false);
-            long blockSize =
-                await this.ReadInt64In(this.format.SizeBytes, cancel).ConfigureAwait(false);
+            hash = this.readStream.ReadContentHash(this.receiveBuffer);
+            long blockSize = this.ReadInt64In(this.format.SizeBytes);
             if (blockSize > this.MaxBlockSize)
                 throw new InvalidDataException();
-            await this.stream.ReadExact(this.receiveBuffer, 0, (int)blockSize, cancel)
-                      .ConfigureAwait(false);
+            this.readStream.ReadExact(this.receiveBuffer, 0, (int)blockSize);
             this.Available?.Invoke(this, hash, this.receiveBuffer.AsSpan(0, (int)blockSize));
             break;
 
@@ -162,44 +163,62 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
         }
     }
 
+    readonly ConcurrentQueue<SendRequest> sendQueue = new();
+    readonly AutoResetEvent sendEvent = new(initialState: false);
+
     async ValueTask<long> Send(byte[] packet, int packetLength,
                                uint queryID, Query query,
                                CancellationToken cancel) {
-        bool gotSemaphore = false;
-        try {
-            try {
-                await this.sendSemaphore.WaitAsync(cancel).ConfigureAwait(false);
-                gotSemaphore = true;
-#if NET6_0_OR_GREATER
-                await this.stream.WriteAsync(packet.AsMemory(0, packetLength), cancel)
-                          .ConfigureAwait(false);
-#else
-                await this.stream.WriteAsync(packet, 0, packetLength, cancel).ConfigureAwait(false);
-#endif
-            } finally {
-                ArrayPool<byte>.Shared.Return(packet);
-            }
-
-            await this.stream.FlushAsync(cancel).ConfigureAwait(false);
-
-            this.sendSemaphore.Release();
-            gotSemaphore = false;
-        } catch {
-            if (gotSemaphore)
-                this.sendSemaphore.Release();
-            this.Remove(queryID, query);
-            throw;
-        }
-
+        var request = new SendRequest(packet, packetLength, query.Completion);
+        this.sendQueue.Enqueue(request);
+        this.sendEvent.Set();
 
         using var _ = cancel.Register(() => query.Completion.TrySetCanceled(cancel),
                                       useSynchronizationContext: false);
+        using var __ = this.stop.Token.Register(() => query.Completion.TrySetCanceled(this.stop.Token),
+                                               useSynchronizationContext: false);
 
         try {
-            return await query.Completion.Task.ConfigureAwait(false);
+            long response = await query.Completion.Task.ConfigureAwait(false);
+            await Task.Yield();
+            return response;
         } finally {
             this.Remove(queryID, query);
         }
+    }
+
+    void SendLoop() {
+        while (!this.stop.IsCancellationRequested) {
+            SendRequest? sent = null;
+            while (this.sendQueue.TryDequeue(out var request)) {
+                try {
+                    this.writeStream.Write(request.Packet, 0, request.PacketLength);
+                    sent = request;
+                } catch (Exception e) {
+                    request.Completion.SetException(e);
+                }
+            }
+
+            if (sent is not null)
+                try {
+                    this.writeStream.Flush();
+                } catch (Exception e) {
+                    sent.Completion.TrySetException(e);
+                }
+            else if (this.sendQueue.IsEmpty)
+                this.sendEvent.WaitOne(TimeSpan.FromSeconds(1));
+        }
+    }
+
+    class SendRequest {
+        public SendRequest(byte[] packet, int packetLength, TaskCompletionSource<long> completion) {
+            this.Packet = packet;
+            this.PacketLength = packetLength;
+            this.Completion = completion;
+        }
+        public byte[] Packet { get; }
+        public int PacketLength { get; }
+        public TaskCompletionSource<long> Completion { get; }
     }
 
     struct Query {
@@ -275,13 +294,12 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
         offset += bytes;
     }
 
-    async ValueTask<uint> ReadQueryID(int bytes, CancellationToken cancel) {
-        int value = (int)await this.ReadInt64In(bytes, cancel).ConfigureAwait(false);
+    uint ReadQueryID(int bytes) {
+        int value = (int)this.ReadInt64In(bytes);
         return (uint)value;
     }
 
-    ValueTask<long> ReadInt64In(int bytes, CancellationToken cancel)
-        => this.stream.ReadInt64In(bytes, this.receiveBuffer, cancel);
+    long ReadInt64In(int bytes) => this.readStream.ReadInt64In(bytes, this.receiveBuffer);
 
     public static async ValueTask<ContentStreamClient> Connect(Stream stream,
                                                                CancellationToken cancel = default) {
@@ -289,12 +307,12 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
             throw new ArgumentNullException(nameof(stream));
 
         byte[] buffer = new byte[sizeof(long)];
-        await stream.ReadExact(buffer, 0, buffer.Length, cancel).ConfigureAwait(false);
+        stream.ReadExact(buffer, 0, buffer.Length);
         long version = BinaryPrimitives.ReadInt64LittleEndian(buffer);
         if (version != 0)
             throw new NotSupportedException($"Unsupported version: 0x{version:X16}");
 
-        await stream.ReadExact(buffer, 0, buffer.Length, cancel).ConfigureAwait(false);
+        stream.ReadExact(buffer, 0, buffer.Length);
         long maxBlockSize = BinaryPrimitives.ReadInt64LittleEndian(buffer);
         if (maxBlockSize < ContentHash.SIZE_IN_BYTES * 2)
             throw new InvalidDataException("Invalid max block size");
@@ -304,11 +322,11 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
         return new(stream, (int)maxBlockSize);
     }
 
-    async void RunAsync() {
+    void Run() {
         int packets = 0;
         try {
             while (true) {
-                await this.HandlePacket(CancellationToken.None).ConfigureAwait(false);
+                this.HandlePacket();
                 packets++;
             }
         } catch (ObjectDisposedException) {
@@ -319,7 +337,10 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
     }
 
     ContentStreamClient(Stream stream, int maxBlockSize) {
-        this.stream = stream;
+        if (stream is null)
+            throw new ArgumentNullException(nameof(stream));
+        this.readStream = new(stream, bufferSize: 64 * 1024);
+        this.writeStream = stream as BufferedStream ?? new(stream, bufferSize: 64 * 1024);
         this.MaxBlockSize = maxBlockSize;
 #if NET6_0_OR_GREATER
         this.receiveBuffer = new byte[ContentHash.SIZE_IN_BYTES];
@@ -328,8 +349,21 @@ public sealed class ContentStreamClient: IContentCache, IDisposable {
             new byte[Math.Max(ContentHash.SIZE_IN_BYTES, Math.Min(maxBlockSize, 128 * 1024))];
 #endif
         this.format = ContentStreamPacketFormat.V0(maxBlockSize);
-        this.RunAsync();
+        var receiver = new Thread(this.Run) {
+            IsBackground = true,
+            Name = "ContentStreamClient " + stream.GetType().Name,
+        };
+        receiver.Start();
+
+        var sender = new Thread(this.SendLoop) {
+            Name = "ContentStreamClient Send " + stream.GetType().Name,
+            IsBackground = true,
+        };
+        sender.Start();
     }
 
-    public void Dispose() => this.stream.Dispose();
+    public void Dispose() {
+        this.stop.Cancel();
+        this.readStream.Dispose();
+    }
 }

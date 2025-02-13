@@ -2,18 +2,19 @@ namespace Hash;
 
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
+using System.Diagnostics.CodeAnalysis;
 using System.Net.Sockets;
+using System.Runtime.ExceptionServices;
 
 using Microsoft.Extensions.Logging.Abstractions;
-
-using Nito.AsyncEx;
 
 using static ContentStreamClient;
 
 class ContentStreamServer {
     readonly IBlockCache cache;
     readonly ContentStreamPacketFormat format;
-    readonly Stream stream;
+    readonly BufferedStream readStream, writeStream;
     readonly byte[] receiveBuffer;
     readonly CancellationTokenSource stop = new();
     StopReason stopReason = StopReason.STOP_REQUESTED;
@@ -39,12 +40,26 @@ class ContentStreamServer {
         BinaryPrimitives.WriteInt64LittleEndian(sendBuffer, 0);
         BinaryPrimitives.WriteInt64LittleEndian(sendBuffer.AsSpan(8), this.cache.MaxBlockSize);
         try {
-            await this.stream.WriteAsync(sendBuffer, 0, 16, cancel).ConfigureAwait(false);
-            await this.stream.FlushAsync(cancel).ConfigureAwait(false);
+            await this.writeStream.WriteAsync(sendBuffer, 0, 16, cancel).ConfigureAwait(false);
+            await this.writeStream.FlushAsync(cancel).ConfigureAwait(false);
 
-            while (true) {
-                await this.HandlePacketAsync(cancel).ConfigureAwait(false);
-            }
+            ExceptionDispatchInfo? exception = null;
+            var thread = new Thread(() => {
+                try {
+                    while (!cancel.IsCancellationRequested) {
+                        this.HandlePacket(cancel);
+                    }
+                } catch (Exception e) {
+                    exception = ExceptionDispatchInfo.Capture(e);
+                }
+            }) {
+                Name = "ContentStreamServer " + this.readStream.UnderlyingStream.GetType().Name,
+                IsBackground = true,
+            };
+            thread.Start();
+            await thread.JoinAsync().ConfigureAwait(false);
+            exception?.Throw();
+            return this.stopReason;
         } catch (OperationCanceledException e) when (e.CancellationToken == cancel) {
             return this.stopReason;
         } catch (EndOfStreamException) {
@@ -57,58 +72,51 @@ class ContentStreamServer {
         }
     }
 
-    async ValueTask HandlePacketAsync(CancellationToken cancel) {
-        var purpose = (Purpose)await this.ReadInt64Async(this.format.PurposeBytes, cancel)
-                                         .ConfigureAwait(false);
+    void HandlePacket(CancellationToken cancel) {
+        var purpose = (Purpose)this.ReadInt64(this.format.PurposeBytes);
 
         switch (purpose) {
         case Purpose.READ:
-            await this.ReceiveReadAsync(cancel).ConfigureAwait(false);
+            this.ReceiveRead(cancel);
             break;
 
         case Purpose.WRITE:
-            await this.ReceiveWriteAsync(cancel).ConfigureAwait(false);
+            this.ReceiveWrite(cancel);
             break;
 
         default:
-            await this.SendErrorAsync(Invariant($"bad purpose: {purpose}"), cancel)
-                      .ConfigureAwait(false);
+            this.SendError(Invariant($"bad purpose: {purpose}"), cancel);
             return;
         }
     }
 
-    async ValueTask SendErrorAsync(string message, CancellationToken cancel) {
+    [SuppressMessage("Usage", "VSTHRD100")]
+    async void SendError(string message, CancellationToken cancel) {
         this.log.LogDebug("sending error: {Message}", message);
         using var mem = MemoryPool<byte>.Shared.Rent(128);
         int bytes = System.Text.Encoding.ASCII.GetBytes(message, mem.Memory.Span);
         try {
             await this.SendAsync(mem.Memory[..bytes], cancel).ConfigureAwait(false);
-        } finally {
+        } catch (Exception) { } finally {
             this.Stop(StopReason.ERROR);
         }
-
-        throw new InvalidDataException(message);
     }
 
     /// <seealso cref="ContentStreamClient.WriteAsync"/>
-    async ValueTask ReceiveWriteAsync(CancellationToken cancel) {
-        uint queryID = await this.ReadQueryIDAsync(this.format.QueryBytes, cancel)
-                                 .ConfigureAwait(false);
-        int toWrite = checked((int)await this.ReadInt64Async(this.format.SizeBytes, cancel)
-                                             .ConfigureAwait(false));
-        var hash = await this.stream.ReadContentHash(this.receiveBuffer, cancel)
-                             .ConfigureAwait(false);
+    void ReceiveWrite(CancellationToken cancel) {
+        uint queryID = this.ReadQueryID(this.format.QueryBytes);
+        int toWrite = checked((int)this.ReadInt64(this.format.SizeBytes));
+        var hash = this.readStream.ReadContentHash(this.receiveBuffer);
 
         if (toWrite < 0 || toWrite > this.cache.MaxBlockSize)
-            await this.SendErrorAsync(Invariant($"bad write size: {toWrite}"), cancel)
-                      .ConfigureAwait(false);
+            this.SendError(Invariant($"bad write size: {toWrite}"), cancel);
 
         byte[] data = ArrayPool<byte>.Shared.Rent(
             Math.Max(
                 toWrite,
                 this.format.WriteResponseLength)); // will use the same buffer for response
         try {
-            await this.stream.ReadExact(data, 0, toWrite, cancel).ConfigureAwait(false);
+            this.readStream.ReadExact(data, 0, toWrite);
         } catch {
             ArrayPool<byte>.Shared.Return(data);
             throw;
@@ -133,26 +141,21 @@ class ContentStreamServer {
             await this.SendAsync(buffer.AsMemory(0, packetOffset), cancel).ConfigureAwait(false);
         } catch (Exception e) {
             string message = e is HashMismatchException ? "hash mismatch" : "internal error";
-            await this.SendErrorAsync(message, cancel).ConfigureAwait(false);
+            this.SendError(message, cancel);
         } finally {
             ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 
     /// <seealso cref="ContentStreamClient.ReadAsync"/>
-    async ValueTask ReceiveReadAsync(CancellationToken cancel) {
-        uint queryID = await this.ReadQueryIDAsync(this.format.QueryBytes, cancel)
-                                 .ConfigureAwait(false);
-        long offset =
-            await this.ReadInt64Async(this.format.SizeBytes, cancel).ConfigureAwait(false);
-        int toRead = checked((int)await this.ReadInt64Async(this.format.SizeBytes, cancel)
-                                            .ConfigureAwait(false));
-        var hash = await this.stream.ReadContentHash(this.receiveBuffer, cancel)
-                             .ConfigureAwait(false);
+    void ReceiveRead(CancellationToken cancel) {
+        uint queryID = this.ReadQueryID(this.format.QueryBytes);
+        long offset = this.ReadInt64(this.format.SizeBytes);
+        int toRead = checked((int)this.ReadInt64(this.format.SizeBytes));
+        var hash = this.readStream.ReadContentHash(this.receiveBuffer);
 
         if (toRead < 0 || toRead > this.cache.MaxBlockSize)
-            await this.SendErrorAsync(Invariant($"bad read size: {toRead}"), cancel)
-                      .ConfigureAwait(false);
+            this.SendError(Invariant($"bad read size: {toRead}"), cancel);
 
         this.RespondToReadAsync(queryID, offset, toRead, hash, cancel)
             .Forget(NullLogger<ContentStreamServer>.Instance);
@@ -184,37 +187,80 @@ class ContentStreamServer {
             await this.SendAsync(responseMemory, cancel)
                       .ConfigureAwait(false);
         } catch {
-            await this.SendErrorAsync("internal error", cancel).ConfigureAwait(false);
+            this.SendError("internal error", cancel);
         } finally {
             ArrayPool<byte>.Shared.Return(response);
         }
     }
 
-    readonly SemaphoreSlim sendSemaphore = new(1, 1);
+    readonly ConcurrentQueue<SendRequest> sendQueue = new();
+    readonly AutoResetEvent sendEvent = new(initialState: false);
 
+    [SuppressMessage("Usage", "VSTHRD003", Justification = "We created the task")]
     async ValueTask SendAsync(Memory<byte> packet, CancellationToken cancel) {
-        using var _ = await this.sendSemaphore.LockAsync(cancel).ConfigureAwait(false);
-        await this.stream.WriteAsync(packet, cancel).ConfigureAwait(false);
-        await this.stream.FlushAsync(cancel).ConfigureAwait(false);
+        var request = new SendRequest(packet);
+        this.sendQueue.Enqueue(request);
+        this.sendEvent.Set();
+        await request.Completion.Task.ConfigureAwait(false);
+        await Task.Yield();
     }
 
-    async ValueTask<long> ReadInt64Async(int bytes, CancellationToken cancel)
-        => await this.stream.ReadInt64In(bytes, this.receiveBuffer, cancel)
-                     .ConfigureAwait(false);
+    [SuppressMessage("Usage", "VSTHRD100", Justification = "We have our own thread")]
+    void SendLoop() {
+        //var sentSizes = new List<int>(1_000_000);
+        while (!this.stop.IsCancellationRequested) {
+            int sent = 0;
+            while (this.sendQueue.TryDequeue(out var request)) {
+                try {
+                    this.writeStream.Write(request.Packet.Span);
+                    request.Completion.SetResult();
+                    sent++;
+                } catch (Exception e) {
+                    request.Completion.SetException(e);
+                    this.Stop(StopReason.ERROR);
+                }
+            }
 
-    async ValueTask<uint> ReadQueryIDAsync(int bytes, CancellationToken cancel) {
-        int value = (int)await this.ReadInt64Async(bytes, cancel).ConfigureAwait(false);
+            if (sent > 0)
+                try {
+                    //sentSizes.Add(sent);
+                    this.writeStream.Flush();
+                } catch (Exception) {
+                    this.Stop(StopReason.ERROR);
+                }
+            else if (this.sendQueue.IsEmpty)
+                this.sendEvent.WaitOne(TimeSpan.FromSeconds(1));
+        }
+        //Debugger.Launch();
+        //GC.KeepAlive(sentSizes);
+    }
+
+    class SendRequest {
+        public SendRequest(Memory<byte> packet) => this.Packet = packet;
+        public Memory<byte> Packet { get; }
+        public TaskCompletionSource Completion { get; } = new();
+    }
+
+    long ReadInt64(int bytes) => this.readStream.ReadInt64In(bytes, this.receiveBuffer);
+
+    uint ReadQueryID(int bytes) {
+        int value = (int)this.ReadInt64(bytes);
         return (uint)value;
     }
 
     void Stop(StopReason reason) {
+        if (this.stop.IsCancellationRequested)
+            return;
         this.stopReason = reason;
         this.stop.Cancel();
     }
 
     public ContentStreamServer(IBlockCache cache, Stream stream, ILogger log) {
+        if (stream is null)
+            throw new ArgumentNullException(nameof(stream));
         this.cache = cache ?? throw new ArgumentNullException(nameof(cache));
-        this.stream = stream ?? throw new ArgumentNullException(nameof(stream));
+        this.readStream = new(stream, bufferSize: 64 * 1024);
+        this.writeStream = stream as BufferedStream ?? new(stream, bufferSize: 64 * 1024);
         this.log = log ?? throw new ArgumentNullException(nameof(log));
 
         if (this.cache.MaxBlockSize > int.MaxValue / 2)
@@ -227,5 +273,11 @@ class ContentStreamServer {
             this.format.WriteQueryLength((int)this.cache.MaxBlockSize),
             min: ContentHash.SIZE_IN_BYTES,
             max: 128 * 1024)];
+
+        var sender = new Thread(this.SendLoop) {
+            Name = "ContentStreamServer Send " + stream.GetType().Name,
+            IsBackground = true,
+        };
+        sender.Start();
     }
 }
