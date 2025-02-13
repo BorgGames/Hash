@@ -29,10 +29,10 @@ public class StressTest {
         var timeIsUp = duration.ToCancellation();
         var tasks = new List<Task<long>>();
         var stopwatch = StopwatchTimestamp.Now;
+        var tcpClient = new TcpClient();
+        await tcpClient.ConnectAsync(IPAddress.Loopback, port, timeIsUp);
+        var client = await ContentStreamClient.Connect(tcpClient.GetStream(), timeIsUp);
         for (int i = 0; i < Environment.ProcessorCount * 2; i++) {
-            var tcpClient = new TcpClient();
-            await tcpClient.ConnectAsync(IPAddress.Loopback, port, timeIsUp);
-            var client = await ContentStreamClient.Connect(tcpClient.GetStream(), timeIsUp);
             tasks.Add(AbuseAsync(client, timeIsUp));
         }
 
