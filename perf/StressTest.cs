@@ -47,6 +47,22 @@ public class StressTest {
     }
 
     /// <summary>
+    /// Runs a correctness stress test against <paramref name="cache"/> for the specified
+    /// <paramref name="duration"/> using <see cref="Environment.ProcessorCount"/> * 2
+    /// concurrent read/write tasks. Each task writes random blocks and reads them back,
+    /// recomputing the hash to verify data integrity. Throws
+    /// <see cref="HashMismatchException"/> on corruption.
+    /// </summary>
+    public static async Task RunCorrectnessAsync(IContentCache cache, TimeSpan duration) {
+        var timeIsUp = duration.ToCancellation();
+        var tasks = new List<Task>();
+        for (int i = 0; i < Environment.ProcessorCount * 2; i++)
+            tasks.Add(AbuseAsync(cache, timeIsUp));
+
+        await Task.WhenAll(tasks);
+    }
+
+    /// <summary>
     /// Measures write-only throughput for the given cache over the specified
     /// <paramref name="duration"/> using <see cref="Environment.ProcessorCount"/> * 2
     /// concurrent writer tasks. Useful for isolating write-path contention.

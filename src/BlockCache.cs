@@ -75,7 +75,6 @@ public sealed class BlockCache: IBlockCache, System.IAsyncDisposable {
                     await this.storage.MarkDirtyAsync().ConfigureAwait(false);
                 } catch {
                     await blockWriteLock.DisposeAsync().ConfigureAwait(false);
-                    blockWriteLock = default;
                     throw;
                 }
             } else {
