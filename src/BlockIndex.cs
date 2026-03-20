@@ -80,8 +80,7 @@ sealed class BlockIndex: IAsyncDisposable {
 
     /// <summary>
     /// Updates the in-memory hash→index dictionary without touching the persisted entry.
-    /// Must be called under the index lock and block write lock, after
-    /// <see cref="CommitEntry"/> has written the placeholder entry.
+    /// Must be called under both the index lock and the block write lock.
     /// </summary>
     internal void UpdateDictionary(int blockIndex, ContentHash newHash, ContentHash oldHash) {
         if (blockIndex < 0 || blockIndex >= this.BlockCount)
@@ -96,9 +95,8 @@ sealed class BlockIndex: IAsyncDisposable {
     }
 
     /// <summary>
-    /// Writes a persisted index entry without touching the in-memory dictionary.
-    /// Used both for the placeholder entry (before data write) and the final entry
-    /// (after data write). Must be called under the block write lock.
+    /// Writes the persisted index entry without touching the in-memory dictionary.
+    /// Must be called under the block lock (not the index lock).
     /// </summary>
     internal void CommitEntry(int blockIndex, Entry value) {
         if (blockIndex < 0 || blockIndex >= this.BlockCount)

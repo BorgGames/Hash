@@ -47,8 +47,9 @@ public sealed class BlockCache: IBlockCache, System.IAsyncDisposable {
             this.log.LogDebug("write lock wait: {Microseconds:F0}us",
                               start.Elapsed.TotalMicroseconds);
 
-        // Hoisted outside the try so they survive the finally (indexLock.Release):
-        // index is used for logging and blockWriteLock in the await-using block.
+        // Hoisted outside the try so they survive the finally (indexLock.Release) and are
+        // accessible in the continuation: index is used in CommitWrite and blockWriteLock
+        // in the await-using block, both of which execute after the index lock is dropped.
         int index = -1;
         AsyncReaderWriterLock.Releaser blockWriteLock = default;
         try {
@@ -67,21 +68,20 @@ public sealed class BlockCache: IBlockCache, System.IAsyncDisposable {
                 var entryLock = this.blockLocks[index % this.blockLocks.Length];
 
                 // Acquire the block write lock while still holding the index lock.
-                // This prevents a concurrent reader that has already found the evicted
-                // hash from reading the block while we overwrite it.
+                // Both the writer (here) and any concurrent reader acquire their respective
+                // block lock while holding the index lock.  This overlap is the key invariant:
+                // a reader that finds the new hash in the dictionary must acquire blockReadLock,
+                // which blocks until blockWriteLock is released (after CommitWrite below).
+                // Therefore every reader is guaranteed to observe fully-committed data,
+                // regardless of when the hash becomes visible in the dictionary.
                 blockWriteLock = await entryLock.WriteLockAsync(cancel);
                 try {
-                    await this.storage.MarkDirtyAsync().ConfigureAwait(false);
-                    // Phase 1 (under both locks):
-                    //   (a) Write a placeholder entry to the persisted index.  This
-                    //       means any crash between now and CommitFinalEntry will
-                    //       leave an obviously-stale entry that crash-recovery rebuilds.
-                    //   (b) Update the in-memory dict so new readers find the block
-                    //       under its new hash.  Concurrent readers that arrive here
-                    //       will block on the block read lock until Phase 3 completes,
-                    //       so they always observe fully-written data.
-                    this.storage.CommitPlaceholder(index);
+                    // Update the in-memory hash->index dictionary under the index lock so
+                    // concurrent readers and writers see a consistent view immediately.
                     this.storage.UpdateIndex(index, newHash: hash, oldHash: evicted);
+                    // Mark dirty before CommitWrite so that a crash between here and the
+                    // data write below always triggers a full index rebuild on restart.
+                    await this.storage.MarkDirtyAsync().ConfigureAwait(false);
                 } catch {
                     await blockWriteLock.DisposeAsync().ConfigureAwait(false);
                     throw;
@@ -108,17 +108,15 @@ public sealed class BlockCache: IBlockCache, System.IAsyncDisposable {
             this.indexLock.Release();
         }
 
+        // Write the persisted index entry and block data under only the block write lock.
+        // The index lock has already been released, allowing other operations to proceed
+        // concurrently while this (potentially large) copy is in progress.
+        // Safety: any reader that already found the new hash and is waiting on blockReadLock
+        // will only unblock after CommitWrite completes, so it always sees committed data.
         // index is always valid here: the early-return branches never reach this point.
         Debug.Assert(index >= 0);
-
-        // Phase 2 (block write lock only): write the raw block bytes.
-        // Phase 3 (block write lock only): commit the real persisted index entry.
-        // blockWriteLock is released by the await-using; any reader that found the new
-        // hash in Phase 1 and is waiting on the block read lock will unblock only after
-        // both phases complete, guaranteeing it sees fully-written data.
         await using (blockWriteLock) {
-            this.storage.WriteBlockData(index, content);
-            this.storage.CommitFinalEntry(index, content, hash);
+            this.storage.CommitWrite(index, content, hash);
         }
 
         this.log.Log(
