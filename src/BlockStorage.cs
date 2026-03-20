@@ -128,21 +128,35 @@ sealed class BlockStorage: IAsyncDisposable {
     /// <summary>
     /// Updates only the in-memory hash→index dictionary for the given block.
     /// Must be called under the index lock and block write lock, after
-    /// <see cref="CommitWrite"/> has already written the block data.
+    /// <see cref="CommitPlaceholder"/> and before releasing the index lock.
     /// </summary>
     internal void UpdateIndex(int blockIndex, ContentHash newHash, ContentHash oldHash)
         => this.index.UpdateDictionary(blockIndex, newHash, oldHash);
 
     /// <summary>
-    /// Writes the persisted index entry and block data.
-    /// Must be called under both the index lock and the block write lock, and
-    /// before <see cref="UpdateIndex"/> so that block data is committed before
-    /// the hash becomes visible to readers via the dictionary.
+    /// Writes a placeholder entry (zero-length, random hash) to the persisted index,
+    /// marking the block as "write in progress" for crash recovery.
+    /// Must be called under both the index lock and the block write lock,
+    /// before releasing the index lock and before <see cref="WriteBlockData"/>.
     /// </summary>
-    internal void CommitWrite(int blockIndex, ReadOnlyMemory<byte> block, ContentHash hash) {
-        this.index.CommitEntry(blockIndex, new(hash, block.Length));
-        this.writer.Write(block.Span, blockIndex, offset: 0);
-    }
+    internal void CommitPlaceholder(int blockIndex)
+        => this.index.CommitEntry(blockIndex, new(ContentHash.Fake(Random.Shared), 0));
+
+    /// <summary>
+    /// Writes the raw block bytes. Must be called under the block write lock only,
+    /// after the index lock has been released, after <see cref="CommitPlaceholder"/>,
+    /// and before <see cref="CommitFinalEntry"/>.
+    /// </summary>
+    internal void WriteBlockData(int blockIndex, ReadOnlyMemory<byte> block)
+        => this.writer.Write(block.Span, blockIndex, offset: 0);
+
+    /// <summary>
+    /// Writes the real persisted index entry (correct hash and byte count) after
+    /// the block data has been fully written.
+    /// Must be called under the block write lock only, after <see cref="WriteBlockData"/>.
+    /// </summary>
+    internal void CommitFinalEntry(int blockIndex, ReadOnlyMemory<byte> block, ContentHash hash)
+        => this.index.CommitEntry(blockIndex, new(hash, block.Length));
 
     public static async Task<BlockStorage> CreateAsync(string indexPath, string blocksPath,
                                                        int blockSize,

@@ -48,8 +48,7 @@ public sealed class BlockCache: IBlockCache, System.IAsyncDisposable {
                               start.Elapsed.TotalMicroseconds);
 
         // Hoisted outside the try so they survive the finally (indexLock.Release):
-        // index is used for logging and blockWriteLock in the await-using block that
-        // releases the lock after the index lock is dropped.
+        // index is used for logging and blockWriteLock in the await-using block.
         int index = -1;
         AsyncReaderWriterLock.Releaser blockWriteLock = default;
         try {
@@ -68,17 +67,20 @@ public sealed class BlockCache: IBlockCache, System.IAsyncDisposable {
                 var entryLock = this.blockLocks[index % this.blockLocks.Length];
 
                 // Acquire the block write lock while still holding the index lock.
-                // This prevents a concurrent reader from reading the block while
-                // the data is being written.
+                // This prevents a concurrent reader that has already found the evicted
+                // hash from reading the block while we overwrite it.
                 blockWriteLock = await entryLock.WriteLockAsync(cancel);
                 try {
                     await this.storage.MarkDirtyAsync().ConfigureAwait(false);
-                    // Write the block data and persisted index entry BEFORE updating the
-                    // in-memory dictionary.  Readers locate a block via the dictionary and
-                    // then acquire a block-level read lock; keeping the hash out of the
-                    // dictionary until CommitWrite completes means no reader can ever
-                    // observe the hash without the corresponding data already committed.
-                    this.storage.CommitWrite(index, content, hash);
+                    // Phase 1 (under both locks):
+                    //   (a) Write a placeholder entry to the persisted index.  This
+                    //       means any crash between now and CommitFinalEntry will
+                    //       leave an obviously-stale entry that crash-recovery rebuilds.
+                    //   (b) Update the in-memory dict so new readers find the block
+                    //       under its new hash.  Concurrent readers that arrive here
+                    //       will block on the block read lock until Phase 3 completes,
+                    //       so they always observe fully-written data.
+                    this.storage.CommitPlaceholder(index);
                     this.storage.UpdateIndex(index, newHash: hash, oldHash: evicted);
                 } catch {
                     await blockWriteLock.DisposeAsync().ConfigureAwait(false);
@@ -101,14 +103,23 @@ public sealed class BlockCache: IBlockCache, System.IAsyncDisposable {
 #endif
             }
         } finally {
+            // Release the index lock before writing block data so other reads and writes
+            // can proceed concurrently while the (potentially large) copy is in progress.
             this.indexLock.Release();
         }
 
         // index is always valid here: the early-return branches never reach this point.
         Debug.Assert(index >= 0);
-        // Release the block write lock after the index lock so that any reader that
-        // finds the new hash and blocks on readLock sees committed data once unblocked.
-        await using (blockWriteLock) { }
+
+        // Phase 2 (block write lock only): write the raw block bytes.
+        // Phase 3 (block write lock only): commit the real persisted index entry.
+        // blockWriteLock is released by the await-using; any reader that found the new
+        // hash in Phase 1 and is waiting on the block read lock will unblock only after
+        // both phases complete, guaranteeing it sees fully-written data.
+        await using (blockWriteLock) {
+            this.storage.WriteBlockData(index, content);
+            this.storage.CommitFinalEntry(index, content, hash);
+        }
 
         this.log.Log(
             perfLevel, "Set content[{Length}] for {Hash} at {Index} in {Microseconds:F0}us",
