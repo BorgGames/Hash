@@ -46,8 +46,10 @@ public sealed class BlockCache: IBlockCache, System.IAsyncDisposable {
         if (reportPerf)
             this.log.LogDebug("write lock wait: {Microseconds:F0}us",
                               start.Elapsed.TotalMicroseconds);
+
+        int index = -1;
+        AsyncReaderWriterLock.Releaser blockWriteLock = default;
         try {
-            int index;
             var writeTime = start = StopwatchTimestamp.Now;
             if (this.evictionStrategy.Access(hash, out var evicted)) {
                 this.Evicted?.Invoke(this, evicted);
@@ -61,13 +63,21 @@ public sealed class BlockCache: IBlockCache, System.IAsyncDisposable {
 
                 start = StopwatchTimestamp.Now;
                 var entryLock = this.blockLocks[index % this.blockLocks.Length];
-                await using (await entryLock.WriteLockAsync(cancel))
-                    await this.storage.WriteAsync(index, content, hash, CancellationToken.None)
-                              .ConfigureAwait(false);
 
-                this.log.Log(
-                    perfLevel, "Set content[{Length}] for {Hash} at {Index} in {Microseconds:F0}us",
-                    content.Length, hash, index, start.Elapsed.TotalMicroseconds);
+                // Acquire the block write lock while still holding the index lock.
+                // This prevents another writer from claiming the same block between the
+                // dictionary update below and the actual data write after the index lock drops.
+                blockWriteLock = await entryLock.WriteLockAsync(cancel);
+                try {
+                    // Update the in-memory hash->index dictionary under the index lock so
+                    // concurrent readers and writers see a consistent view immediately.
+                    this.storage.UpdateIndex(index, newHash: hash, oldHash: evicted);
+                    await this.storage.MarkDirtyAsync().ConfigureAwait(false);
+                } catch {
+                    await blockWriteLock.DisposeAsync().ConfigureAwait(false);
+                    blockWriteLock = default;
+                    throw;
+                }
             } else {
 #if DEBUG
                 index = this.storage.BlockIndex(hash);
@@ -84,12 +94,26 @@ public sealed class BlockCache: IBlockCache, System.IAsyncDisposable {
                 return TimeSpan.Zero;
 #endif
             }
-
-            this.Available?.Invoke(this, hash, content.Span);
-            return start.Elapsed;
         } finally {
+            // Release the index lock before writing block data so other reads and writes
+            // can proceed concurrently while the (potentially large) copy is in progress.
             this.indexLock.Release();
         }
+
+        // Write the persisted index entry and block data under only the block write lock.
+        // The index lock has already been released, allowing other operations to proceed.
+        // index is always valid here: the early-return branches never reach this point.
+        Debug.Assert(index >= 0);
+        await using (blockWriteLock) {
+            this.storage.CommitWrite(index, content, hash);
+        }
+
+        this.log.Log(
+            perfLevel, "Set content[{Length}] for {Hash} at {Index} in {Microseconds:F0}us",
+            content.Length, hash, index, start.Elapsed.TotalMicroseconds);
+
+        this.Available?.Invoke(this, hash, content.Span);
+        return start.Elapsed;
     }
 
     public async ValueTask<int?> ReadAsync(ContentHash hash, long offset, Memory<byte> buffer,

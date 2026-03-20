@@ -78,6 +78,33 @@ sealed class BlockIndex: IAsyncDisposable {
         return true;
     }
 
+    /// <summary>
+    /// Updates the in-memory hash→index dictionary without touching the persisted entry.
+    /// Must be called under the index lock.
+    /// </summary>
+    internal void UpdateDictionary(int blockIndex, ContentHash newHash, ContentHash oldHash) {
+        if (blockIndex < 0 || blockIndex >= this.BlockCount)
+            throw new ArgumentOutOfRangeException(nameof(blockIndex));
+
+        if (!this.positions.TryAdd(newHash, blockIndex))
+            throw new InvalidOperationException(
+                $"Internal error: hash {newHash} is already present in the index");
+        if (!this.positions.Remove(oldHash))
+            throw new InvalidOperationException(
+                $"Internal error: evicted hash {oldHash} was not found in the index");
+    }
+
+    /// <summary>
+    /// Writes the persisted index entry without touching the in-memory dictionary.
+    /// Must be called under the block lock (not the index lock).
+    /// </summary>
+    internal void CommitEntry(int blockIndex, Entry value) {
+        if (blockIndex < 0 || blockIndex >= this.BlockCount)
+            throw new ArgumentOutOfRangeException(nameof(blockIndex));
+
+        this.SetUnchecked(blockIndex, value);
+    }
+
     void SetUnchecked(int index, Entry value) {
         var span = MemoryMarshal.CreateSpan(ref value, 1);
         var bytes = MemoryMarshal.Cast<Entry, byte>(span);

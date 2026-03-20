@@ -116,13 +116,29 @@ sealed class BlockStorage: IAsyncDisposable {
                                 blocksTime, indexTime);
     }
 
-    async ValueTask MarkDirtyAsync() {
+    internal async ValueTask MarkDirtyAsync() {
         if (this.dirty)
             return;
 
         this.index[this.StateTagPosition] = default;
         await this.index.FlushAsync().ConfigureAwait(false);
         this.dirty = true;
+    }
+
+    /// <summary>
+    /// Updates only the in-memory hash→index dictionary for the given block.
+    /// Must be called under the index lock, with the block write lock already held.
+    /// </summary>
+    internal void UpdateIndex(int blockIndex, ContentHash newHash, ContentHash oldHash)
+        => this.index.UpdateDictionary(blockIndex, newHash, oldHash);
+
+    /// <summary>
+    /// Writes the persisted index entry and block data.
+    /// Must be called under the block write lock (not the index lock).
+    /// </summary>
+    internal void CommitWrite(int blockIndex, ReadOnlyMemory<byte> block, ContentHash hash) {
+        this.index.CommitEntry(blockIndex, new(hash, block.Length));
+        this.writer.Write(block.Span, blockIndex, offset: 0);
     }
 
     public static async Task<BlockStorage> CreateAsync(string indexPath, string blocksPath,
