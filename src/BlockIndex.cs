@@ -88,12 +88,10 @@ sealed class BlockIndex: IAsyncDisposable {
 
         if (!this.positions.TryAdd(newHash, blockIndex))
             throw new InvalidOperationException(
-                $"Internal error: hash {newHash} is already mapped to a block "
-              + $"(attempted to map to block {blockIndex})");
+                $"Internal error: hash {newHash} is already mapped to a block (attempted to map to block {blockIndex})");
         if (!this.positions.Remove(oldHash))
             throw new InvalidOperationException(
-                $"Internal error: evicted hash {oldHash} was not found in the index "
-              + $"(block {blockIndex})");
+                $"Internal error: evicted hash {oldHash} was not found in the index (block {blockIndex})");
     }
 
     /// <summary>
