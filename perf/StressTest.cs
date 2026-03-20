@@ -133,7 +133,7 @@ public class StressTest {
                     throw new HashMismatchException();
                 transmitted += read;
             }
-        } catch (OperationCanceledException e) {
+        } catch (OperationCanceledException) {
             var opTime = accessStart.Elapsed;
             if (!cancel.IsCancellationRequested) {
                 await Console.Error.WriteLineAsync($"last access: {opTime.TotalMilliseconds:N0}ms");

@@ -47,6 +47,9 @@ public sealed class BlockCache: IBlockCache, System.IAsyncDisposable {
             this.log.LogDebug("write lock wait: {Microseconds:F0}us",
                               start.Elapsed.TotalMicroseconds);
 
+        // Hoisted outside the try so they survive the finally (indexLock.Release) and are
+        // accessible in the continuation: index is used in CommitWrite and blockWriteLock
+        // in the await-using block, both of which execute after the index lock is dropped.
         int index = -1;
         AsyncReaderWriterLock.Releaser blockWriteLock = default;
         try {
