@@ -127,14 +127,17 @@ sealed class BlockStorage: IAsyncDisposable {
 
     /// <summary>
     /// Updates only the in-memory hash→index dictionary for the given block.
-    /// Must be called under the index lock, with the block write lock already held.
+    /// Must be called under the index lock and block write lock, after
+    /// <see cref="CommitWrite"/> has already written the block data.
     /// </summary>
     internal void UpdateIndex(int blockIndex, ContentHash newHash, ContentHash oldHash)
         => this.index.UpdateDictionary(blockIndex, newHash, oldHash);
 
     /// <summary>
     /// Writes the persisted index entry and block data.
-    /// Must be called under the block write lock (not the index lock).
+    /// Must be called under both the index lock and the block write lock, and
+    /// before <see cref="UpdateIndex"/> so that block data is committed before
+    /// the hash becomes visible to readers via the dictionary.
     /// </summary>
     internal void CommitWrite(int blockIndex, ReadOnlyMemory<byte> block, ContentHash hash) {
         this.index.CommitEntry(blockIndex, new(hash, block.Length));
