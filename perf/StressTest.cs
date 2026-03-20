@@ -46,6 +46,39 @@ public class StressTest {
         return bytesPerSecond;
     }
 
+    /// <summary>
+    /// Measures write-only throughput for the given cache over the specified
+    /// <paramref name="duration"/> using <see cref="Environment.ProcessorCount"/> * 2
+    /// concurrent writer tasks. Useful for isolating write-path contention.
+    /// </summary>
+    public static async Task<ulong> MeasureWriteThroughputAsync(IContentCache cache,
+                                                                TimeSpan duration) {
+        var timeIsUp = duration.ToCancellation();
+        var tasks = new List<Task<long>>();
+        var stopwatch = StopwatchTimestamp.Now;
+        for (int i = 0; i < Environment.ProcessorCount * 2; i++)
+            tasks.Add(WriteLoopAsync(cache, timeIsUp));
+
+        long[] bytes = await Task.WhenAll(tasks);
+        return (ulong)(bytes.Sum() / stopwatch.Elapsed.TotalSeconds);
+    }
+
+    static async Task<long> WriteLoopAsync(IContentCache cache, CancellationToken cancel) {
+        byte[] data = new byte[cache.MaxBlockSize];
+        var random = new Random();
+        long transmitted = 0;
+        try {
+            while (!cancel.IsCancellationRequested) {
+                random.NextBytes(data);
+                var hash = ContentHash.Compute(data);
+                await cache.WriteAsync(hash, data, cancel).ConfigureAwait(false);
+                transmitted += data.Length;
+            }
+        } catch (OperationCanceledException) when (cancel.IsCancellationRequested) { }
+
+        return transmitted;
+    }
+
     static async Task<long> AbuseAsync(IContentCache cache, CancellationToken cancel) {
         byte[] data = new byte[cache.MaxBlockSize];
         var random = new Random();
