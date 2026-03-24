@@ -46,6 +46,22 @@ public class StressTest {
         return bytesPerSecond;
     }
 
+    /// <summary>
+    /// Runs a correctness stress test against <paramref name="cache"/> for the specified
+    /// <paramref name="duration"/> using <see cref="Environment.ProcessorCount"/> * 2
+    /// concurrent read/write tasks. Each task writes random blocks and reads them back,
+    /// recomputing the hash to verify data integrity. Throws
+    /// <see cref="HashMismatchException"/> on corruption.
+    /// </summary>
+    public static async Task RunCorrectnessAsync(IContentCache cache, TimeSpan duration) {
+        var timeIsUp = duration.ToCancellation();
+        var tasks = new List<Task>();
+        for (int i = 0; i < Environment.ProcessorCount * 2; i++)
+            tasks.Add(AbuseAsync(cache, timeIsUp));
+
+        await Task.WhenAll(tasks);
+    }
+
     static async Task<long> AbuseAsync(IContentCache cache, CancellationToken cancel) {
         byte[] data = new byte[cache.MaxBlockSize];
         var random = new Random();
@@ -84,7 +100,7 @@ public class StressTest {
                     throw new HashMismatchException();
                 transmitted += read;
             }
-        } catch (OperationCanceledException e) {
+        } catch (OperationCanceledException) {
             var opTime = accessStart.Elapsed;
             if (!cancel.IsCancellationRequested) {
                 await Console.Error.WriteLineAsync($"last access: {opTime.TotalMilliseconds:N0}ms");

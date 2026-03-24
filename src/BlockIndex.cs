@@ -4,7 +4,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 sealed class BlockIndex: IAsyncDisposable {
-    readonly Dictionary<ContentHash, int> positions = new();
+    internal readonly Dictionary<ContentHash, int> positions = new();
     readonly IBlockReader reader;
     readonly IBlockWriter writer;
 
@@ -78,7 +78,7 @@ sealed class BlockIndex: IAsyncDisposable {
         return true;
     }
 
-    void SetUnchecked(int index, Entry value) {
+    internal void SetUnchecked(int index, Entry value) {
         var span = MemoryMarshal.CreateSpan(ref value, 1);
         var bytes = MemoryMarshal.Cast<Entry, byte>(span);
         this.writer.Write(bytes, index, offset: 0);
