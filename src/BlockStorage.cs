@@ -116,13 +116,6 @@ sealed class BlockStorage: IAsyncDisposable {
                                 blocksTime, indexTime);
     }
 
-    /// <summary>
-    /// Persists a "dirty" state tag so that any subsequent crash triggers a full index
-    /// rebuild on restart. Must be called before <see cref="CommitWrite"/> to guarantee
-    /// the invariant: if a crash occurs between the two writes inside <see cref="CommitWrite"/>
-    /// (persisted index entry vs block data), the dirty bit is already set and recovery will
-    /// re-hash all blocks from their actual data.
-    /// </summary>
     internal async ValueTask MarkDirtyAsync() {
         if (this.dirty)
             return;
@@ -134,21 +127,23 @@ sealed class BlockStorage: IAsyncDisposable {
 
     /// <summary>
     /// Updates only the in-memory hash→index dictionary for the given block.
-    /// Must be called under both the index lock and the block write lock so that any
-    /// concurrent reader that observes the new hash is guaranteed to block on the block
-    /// read lock until <see cref="CommitWrite"/> has finished writing the data.
+    /// Must be called under the index lock, with the block write lock already held.
     /// </summary>
-    internal void UpdateIndex(int blockIndex, ContentHash newHash, ContentHash oldHash)
-        => this.index.UpdateDictionary(blockIndex, newHash, oldHash);
+    internal void UpdateIndex(int blockIndex, ContentHash newHash, ContentHash oldHash) {
+        if (!this.index.positions.TryAdd(newHash, blockIndex))
+            throw new InvalidOperationException(
+                $"Internal error: hash {newHash} is already mapped to a block (attempted to map to block {blockIndex})");
+        if (!this.index.positions.Remove(oldHash))
+            throw new InvalidOperationException(
+                $"Internal error: evicted hash {oldHash} was not found in the index (block {blockIndex})");
+    }
 
     /// <summary>
     /// Writes the persisted index entry and block data.
     /// Must be called under the block write lock (not the index lock).
-    /// <see cref="MarkDirtyAsync"/> must be called before this method so that a crash
-    /// between the two writes always triggers a full index rebuild on restart.
     /// </summary>
     internal void CommitWrite(int blockIndex, ReadOnlyMemory<byte> block, ContentHash hash) {
-        this.index.CommitEntry(blockIndex, new(hash, block.Length));
+        this.index.SetUnchecked(blockIndex, new(hash, block.Length));
         this.writer.Write(block.Span, blockIndex, offset: 0);
     }
 

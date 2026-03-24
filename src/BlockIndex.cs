@@ -4,7 +4,7 @@ using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 sealed class BlockIndex: IAsyncDisposable {
-    readonly Dictionary<ContentHash, int> positions = new();
+    internal readonly Dictionary<ContentHash, int> positions = new();
     readonly IBlockReader reader;
     readonly IBlockWriter writer;
 
@@ -78,34 +78,7 @@ sealed class BlockIndex: IAsyncDisposable {
         return true;
     }
 
-    /// <summary>
-    /// Updates the in-memory hash→index dictionary without touching the persisted entry.
-    /// Must be called under both the index lock and the block write lock.
-    /// </summary>
-    internal void UpdateDictionary(int blockIndex, ContentHash newHash, ContentHash oldHash) {
-        if (blockIndex < 0 || blockIndex >= this.BlockCount)
-            throw new ArgumentOutOfRangeException(nameof(blockIndex));
-
-        if (!this.positions.TryAdd(newHash, blockIndex))
-            throw new InvalidOperationException(
-                $"Internal error: hash {newHash} is already mapped to a block (attempted to map to block {blockIndex})");
-        if (!this.positions.Remove(oldHash))
-            throw new InvalidOperationException(
-                $"Internal error: evicted hash {oldHash} was not found in the index (block {blockIndex})");
-    }
-
-    /// <summary>
-    /// Writes the persisted index entry without touching the in-memory dictionary.
-    /// Must be called under the block lock (not the index lock).
-    /// </summary>
-    internal void CommitEntry(int blockIndex, Entry value) {
-        if (blockIndex < 0 || blockIndex >= this.BlockCount)
-            throw new ArgumentOutOfRangeException(nameof(blockIndex));
-
-        this.SetUnchecked(blockIndex, value);
-    }
-
-    void SetUnchecked(int index, Entry value) {
+    internal void SetUnchecked(int index, Entry value) {
         var span = MemoryMarshal.CreateSpan(ref value, 1);
         var bytes = MemoryMarshal.Cast<Entry, byte>(span);
         this.writer.Write(bytes, index, offset: 0);

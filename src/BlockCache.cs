@@ -68,19 +68,13 @@ public sealed class BlockCache: IBlockCache, System.IAsyncDisposable {
                 var entryLock = this.blockLocks[index % this.blockLocks.Length];
 
                 // Acquire the block write lock while still holding the index lock.
-                // Both the writer (here) and any concurrent reader acquire their respective
-                // block lock while holding the index lock.  This overlap is the key invariant:
-                // a reader that finds the new hash in the dictionary must acquire blockReadLock,
-                // which blocks until blockWriteLock is released (after CommitWrite below).
-                // Therefore every reader is guaranteed to observe fully-committed data,
-                // regardless of when the hash becomes visible in the dictionary.
+                // This prevents another writer from claiming the same block between the
+                // dictionary update below and the actual data write after the index lock drops.
                 blockWriteLock = await entryLock.WriteLockAsync(cancel);
                 try {
                     // Update the in-memory hash->index dictionary under the index lock so
                     // concurrent readers and writers see a consistent view immediately.
                     this.storage.UpdateIndex(index, newHash: hash, oldHash: evicted);
-                    // Mark dirty before CommitWrite so that a crash between here and the
-                    // data write below always triggers a full index rebuild on restart.
                     await this.storage.MarkDirtyAsync().ConfigureAwait(false);
                 } catch {
                     await blockWriteLock.DisposeAsync().ConfigureAwait(false);
@@ -109,10 +103,7 @@ public sealed class BlockCache: IBlockCache, System.IAsyncDisposable {
         }
 
         // Write the persisted index entry and block data under only the block write lock.
-        // The index lock has already been released, allowing other operations to proceed
-        // concurrently while this (potentially large) copy is in progress.
-        // Safety: any reader that already found the new hash and is waiting on blockReadLock
-        // will only unblock after CommitWrite completes, so it always sees committed data.
+        // The index lock has already been released, allowing other operations to proceed.
         // index is always valid here: the early-return branches never reach this point.
         Debug.Assert(index >= 0);
         await using (blockWriteLock) {
